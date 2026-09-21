@@ -135,7 +135,7 @@ footer{color:var(--ink-3);font-size:12.5px;border-top:1px solid var(--line);padd
 <div class="wrap">
   <header>
     <div class="eyebrow" id="eyebrow">Bezig met laden&hellip;</div>
-    <h1>Regionale samenwerkingsverbanden in de zorg</h1>
+    <h1>Regionale samenwerkingen in zorg en welzijn</h1>
     <p class="lede">De regio&rsquo;s van Nederland, gekleurd naar hun relatie tot RSO Nederland.
       Klik een regio voor de gemeenten die eronder vallen.</p>
     <div class="legend" id="legend"></div>
@@ -180,12 +180,17 @@ const CONFIG = {
     status:    "RSO NL lid",
     inwoners:  "inw-2025"
   },
-  // welke statuswaarde hoort bij welke kleur; alles wat hier niet staat wordt "overig"
+  // 1. exacte statuswaarden
   categorie: {
     "Lid":          "lid",
-    "Aspirant-lid": "lid",
+    "Aspirant-lid": "lid"
+  },
+  // 2. statuswaarden die hiermee BEGINNEN; vangt ook "Samenwerking (RijnmondNet)",
+  //    "Samenwerking (Sigra)" en elke variant die later nog bijkomt
+  categorieBeginnendMet: {
     "Samenwerking": "samenw"
   }
+  // 3. al het overige (Nee, leeg, In beraad, …) wordt "overig" → blauw
 };
 /* ====================== einde instellingen ============================ */
 
@@ -199,6 +204,16 @@ const svg = document.getElementById("map"), tip = document.getElementById("tip")
 const detail = document.getElementById("detail"), tbody = document.getElementById("tbody");
 const active = new Set(ORDER);
 let REGIOS = [], TOTAAL = 0, sel = null;
+
+/* ---------- van statuswaarde naar kleurcategorie ---------- */
+function categorieVan(status){
+  const s = String(status || "").trim();
+  if (CONFIG.categorie[s]) return CONFIG.categorie[s];
+  const l = s.toLowerCase();
+  for (const [begin, cat] of Object.entries(CONFIG.categorieBeginnendMet))
+    if (l.startsWith(begin.toLowerCase())) return cat;
+  return "overig";
+}
 
 /* ---------- CSV-parser die aanhalingstekens en komma's in namen aankan ---------- */
 function parseCSV(text){
@@ -222,7 +237,7 @@ function parseCSV(text){
 
 /* ---------- naamnormalisatie: 'RSO Noord-Oost Brabant i.o.' == 'RSO Noord-Oost Brabant' ---------- */
 function slug(s){
-  return String(s).normalize("NFC").replace(/’/g, "'").replace(/ /g, " ")
+  return String(s).normalize("NFC").replace(/’/g, "'").replace(/ /g, " ")
     .toLowerCase()
     .replace(/\bi\.o\.?\b/g, "")
     .replace(/^\s*(rso|vereniging)\s+/, "")
@@ -250,10 +265,11 @@ function build(geo, rijen){
     const naam = rij[K.regio];
     if (!naam) return;
     const k = slug(naam);
-    if (!perRegio.has(k)) perRegio.set(k, {naam, status:rij[K.status] || "", gem:[], inw:0});
+    if (!perRegio.has(k)) perRegio.set(k, {naam, status:rij[K.status] || "", gem:[], inw:0, statussen:new Set()});
     const r = perRegio.get(k);
     r.gem.push(rij[K.gemeente]);
     r.inw += num(rij[K.inwoners]);
+    if (rij[K.status]) r.statussen.add(rij[K.status]);
     if (!r.status) r.status = rij[K.status] || "";
   });
 
@@ -271,16 +287,17 @@ function build(geo, rijen){
   const toPath = ring => ring.map(([lo, la], i) =>
     (i ? "L" : "M") + ((lo * KX - minx) * S).toFixed(1) + " " + ((-la - miny) * S).toFixed(1)).join("") + "Z";
 
-  const zonderData = [];
+  const zonderData = [], gemengd = [];
   REGIOS = geo.features.map(f => {
     const k = slug(f.properties.naam), d = perRegio.get(k);
     if (d) perRegio.delete(k); else zonderData.push(f.properties.naam);
     const status = d ? d.status : "";
+    if (d && d.statussen.size > 1) gemengd.push(`${d.naam} (${[...d.statussen].join(" / ")})`);
     return {
       naam: d ? d.naam : f.properties.naam,
       kaartnaam: f.properties.naam,
       status: status || "Geen status",
-      cat: CONFIG.categorie[status] || "overig",
+      cat: categorieVan(status),
       ngem: d ? d.gem.length : 0,
       inw: d ? d.inw : 0,
       gem: d ? d.gem.slice().sort((a, b) => a.localeCompare(b, "nl")) : [],
@@ -329,12 +346,14 @@ function build(geo, rijen){
        <div class="sub">${nf.format(c.inw)} inwoners in ${c.gem} gemeenten</div>
      </div>`).join("");
 
-  /* waarschuwingen bij niet-gekoppelde namen */
+  /* waarschuwingen bij niet-gekoppelde namen en gemengde regio's */
   const al = [];
   if (zonderVorm.length) al.push(`<div class="alert"><b>${zonderVorm.length} RSO-naam(en) uit de CSV staan niet op de kaart</b>
     ${zonderVorm.join(", ")} &mdash; controleer de schrijfwijze of voeg de regio toe aan ${CONFIG.geojson}.</div>`);
   if (zonderData.length) al.push(`<div class="alert"><b>${zonderData.length} regio(&rsquo;s) op de kaart zonder gegevens</b>
     ${zonderData.join(", ")} &mdash; deze komen niet voor in de kolom &lsquo;${K.regio}&rsquo; van de CSV.</div>`);
+  if (gemengd.length) al.push(`<div class="alert"><b>${gemengd.length} regio(&rsquo;s) met verschillende waarden in &lsquo;${K.status}&rsquo;</b>
+    ${gemengd.join(", ")} &mdash; de kaart kleurt naar de eerste waarde. Splits de regio of maak de waarden gelijk.</div>`);
   document.getElementById("alerts").innerHTML = al.join("");
 
   /* tabel */
